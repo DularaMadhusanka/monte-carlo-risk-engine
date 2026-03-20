@@ -38,10 +38,71 @@ cd monte-carlo-risk-engine
 
 2. Install dependencies:
 ```bash
-pip install numpy pandas matplotlib yfinance seaborn
+pip install -r requirements.txt
 ```
 
 ## Usage
+
+### Deployment Pattern (Fast Runtime)
+For production deployment, avoid downloading years of market data on each request.
+Use a two-step workflow:
+
+1. **Daily precompute job** (Airflow / GitHub Actions / cron)
+2. **Runtime simulation** that only loads cached parameters
+
+#### Step 1: Precompute market parameters once per day
+```bash
+python precompute_params.py --tickers AAPL MSFT TSLA --start 2020-01-01 --output artifacts/market_params.npz
+```
+
+This produces a compressed artifact containing:
+- Drift vector (`annual_mu`)
+- Covariance matrix (`annual_cov`)
+- Cholesky matrix (`chol_L`)
+- Latest prices (`s0`)
+- Metadata (`as_of`, date range, tickers)
+
+#### Step 2: Use cached parameters for user simulations
+```bash
+python simulate_cached.py --params artifacts/market_params.npz --years 1 --sims 5000 --initial 10000
+```
+
+This path is fast because it does **not** call Yahoo Finance and does **not** recompute covariance/cholesky on each request.
+
+#### Step 2 (Server): Inference API for deployment
+Use this when deploying to AWS/Render/Streamlit backend infrastructure.
+
+1) Install API dependencies:
+```bash
+pip install fastapi uvicorn
+```
+
+2) Start the service (loads cached params once at startup):
+```bash
+PARAMS_PATH=artifacts/market_params.npz uvicorn api:app --host 0.0.0.0 --port 8000
+```
+
+3) Call simulation endpoint:
+```bash
+curl -X POST http://localhost:8000/simulate \
+	-H "Content-Type: application/json" \
+	-d '{"initial_value": 10000, "years": 1, "sims": 5000, "seed": 42}'
+```
+
+The API returns portfolio metrics (`expected_final_value`, `var_95_threshold`, `max_potential_loss_95`) in milliseconds since all heavy market preprocessing is already cached.
+
+#### Step 3: Streamlit frontend (dashboard)
+1) Install frontend dependency:
+```bash
+pip install streamlit requests
+```
+
+2) Launch the UI:
+```bash
+streamlit run frontend.py
+```
+
+The dashboard calls the FastAPI backend (`/health` and `/simulate`) and lets users change `initial_value`, `years`, and `sims` interactively.
 
 ### 1. Single Stock Backtest
 ```bash
