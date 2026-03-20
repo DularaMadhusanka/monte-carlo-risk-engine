@@ -72,6 +72,9 @@ This path is fast because it does **not** call Yahoo Finance and does **not** re
 #### Step 2 (Server): Inference API for deployment
 Use this when deploying to AWS/Render/Streamlit backend infrastructure.
 
+> **Important (Render):** this project uses pinned package versions that are compatible with Python 3.10.  
+> Set `PYTHON_VERSION=3.10.14` in Render Environment Variables (or use the included `.python-version`) to avoid pandas source-build failures.
+
 1) Install API dependencies:
 ```bash
 pip install fastapi uvicorn
