@@ -5,7 +5,7 @@ import pandas as pd
 import requests
 import streamlit as st
 
-API_URL = os.getenv("API_URL", "http://127.0.0.1:8000")
+API_URL = os.getenv("API_URL", "https://monte-carlo-risk-engine.onrender.com")
 REQUEST_TIMEOUT_SECONDS = 20
 
 st.set_page_config(page_title="Monte Carlo Risk Engine", layout="wide")
