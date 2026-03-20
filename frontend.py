@@ -2,6 +2,7 @@ import os
 from typing import Any, Dict, Optional
 
 import pandas as pd
+import plotly.graph_objects as go
 import requests
 import streamlit as st
 
@@ -110,6 +111,8 @@ if st.button("Run Risk Simulation", type="primary"):
         try:
             data = call_simulation(api_url, payload)
 
+            st.success("Simulation Complete!")
+
             st.subheader(f"Simulation Results (As of {data['params_as_of']})")
 
             col1, col2, col3 = st.columns(3)
@@ -152,6 +155,74 @@ if st.button("Run Risk Simulation", type="primary"):
             ).set_index("Metric")
 
             st.bar_chart(chart_df)
+
+            st.divider()
+            st.subheader("Risk Dashboard")
+
+            potential_loss_95 = float(data.get("max_potential_loss_95", 0.0))
+            gauge_max = max(potential_loss_95 * 2.0, 1000.0)
+
+            gauge_fig = go.Figure(
+                go.Indicator(
+                    mode="gauge+number",
+                    value=potential_loss_95,
+                    title={"text": "Max Potential Loss (95%)", "font": {"size": 22}},
+                    number={"prefix": "$", "valueformat": ",.0f"},
+                    gauge={
+                        "axis": {"range": [0, gauge_max]},
+                        "bar": {"color": "darkred"},
+                        "steps": [
+                            {"range": [0, gauge_max * 0.4], "color": "#d6f5d6"},
+                            {"range": [gauge_max * 0.4, gauge_max * 0.7], "color": "#fff7cc"},
+                            {"range": [gauge_max * 0.7, gauge_max], "color": "#ffd6d6"},
+                        ],
+                    },
+                )
+            )
+            gauge_fig.update_layout(height=360, margin=dict(l=10, r=10, t=50, b=10))
+
+            allocation_fig = go.Figure(
+                data=[
+                    go.Pie(
+                        labels=asset_labels,
+                        values=normalized_weights,
+                        hole=0.55,
+                        textinfo="label+percent",
+                    )
+                ]
+            )
+            allocation_fig.update_layout(
+                title="Portfolio Allocation", height=360, margin=dict(l=10, r=10, t=50, b=10)
+            )
+
+            dashboard_col1, dashboard_col2 = st.columns(2)
+            dashboard_col1.plotly_chart(gauge_fig, use_container_width=True)
+            dashboard_col2.plotly_chart(allocation_fig, use_container_width=True)
+
+            risk_bar_fig = go.Figure(
+                data=[
+                    go.Bar(
+                        x=["Expected", "Median", "VaR 95%", "CVaR 95%"],
+                        y=[
+                            float(data["expected_final_value"]),
+                            float(data["median_final_value"]),
+                            float(data["var_95_threshold"]),
+                            float(data["cvar_95_expected_shortfall"]),
+                        ],
+                        marker_color=["#4e79a7", "#59a14f", "#f28e2b", "#e15759"],
+                    )
+                ]
+            )
+            risk_bar_fig.update_layout(
+                title="Portfolio Value Comparison",
+                yaxis_title="Value ($)",
+                height=360,
+                margin=dict(l=10, r=10, t=50, b=10),
+            )
+            st.plotly_chart(risk_bar_fig, use_container_width=True)
+
+            with st.expander("View Raw Math/JSON Data"):
+                st.json(data)
 
         except RuntimeError as exc:
             st.error(str(exc))
