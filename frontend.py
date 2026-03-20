@@ -72,11 +72,38 @@ try:
 except requests.exceptions.RequestException as exc:
     st.sidebar.error(f"Cannot connect to backend: {exc}")
 
+asset_labels = ["AAPL", "MSFT", "TSLA"]
+if "health" in locals() and health.get("status") == "ok":
+    tickers = health.get("tickers", [])
+    if isinstance(tickers, list) and len(tickers) == 3:
+        asset_labels = tickers
+
+st.sidebar.header("Portfolio Allocation")
+st.sidebar.write("Adjust asset weights. Values are auto-normalized to 100%.")
+
+w_1 = st.sidebar.slider(f"{asset_labels[0]}", min_value=0, max_value=100, value=33, step=1)
+w_2 = st.sidebar.slider(f"{asset_labels[1]}", min_value=0, max_value=100, value=33, step=1)
+w_3 = st.sidebar.slider(f"{asset_labels[2]}", min_value=0, max_value=100, value=34, step=1)
+
+total_weight = w_1 + w_2 + w_3
+if total_weight == 0:
+    st.sidebar.error("Total allocation cannot be 0%. Increase at least one asset weight.")
+    st.stop()
+
+normalized_weights = [w_1 / total_weight, w_2 / total_weight, w_3 / total_weight]
+st.sidebar.caption(
+    "Normalized: "
+    f"{asset_labels[0]} {normalized_weights[0]:.1%}, "
+    f"{asset_labels[1]} {normalized_weights[1]:.1%}, "
+    f"{asset_labels[2]} {normalized_weights[2]:.1%}"
+)
+
 if st.button("Run Risk Simulation", type="primary"):
     payload = {
         "initial_value": float(initial_value),
         "years": float(years),
         "sims": int(sims),
+        "weights": normalized_weights,
     }
 
     with st.spinner("Calculating parallel universes..."):
@@ -128,6 +155,11 @@ if st.button("Run Risk Simulation", type="primary"):
 
         except RuntimeError as exc:
             st.error(str(exc))
+        except requests.exceptions.Timeout:
+            st.error(
+                "The request timed out. The backend may be waking from cold start; "
+                "please retry in a few seconds."
+            )
         except requests.exceptions.RequestException as exc:
             st.error(f"Network error while calling API: {exc}")
         except Exception as exc:
