@@ -1,9 +1,9 @@
-name: Daily Market Parameter Update
+name: Daily Market Data Update
 
 on:
   schedule:
-    # Runs at 22:00 UTC (after US markets close) every weekday (Monday-Friday)
-    - cron: '0 22 * * 1-5'
+    # Runs at Midnight (UTC) every weekday (Monday-Friday)
+    - cron: '0 0 * * 1-5'
   workflow_dispatch:
 
 permissions:
@@ -14,7 +14,7 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
-  update-parameters:
+  update-data:
     runs-on: ubuntu-latest
     timeout-minutes: 15
 
@@ -33,7 +33,7 @@ jobs:
           python -m pip install --upgrade pip
           pip install numpy pandas yfinance
 
-      - name: Run Parameter Precomputation
+      - name: Run Data Fetcher
         run: |
           mkdir -p artifacts
           python precompute_params.py --output artifacts/market_params.npz
@@ -45,4 +45,4 @@ jobs:
           git add artifacts/market_params.npz
 
           # Only commit if the file actually changed
-          git diff --staged --quiet || (git commit -m "Automated daily parameter update" && git push)
+          git diff --staged --quiet || (git commit -m "🤖 Auto-update daily market data" && git push)
