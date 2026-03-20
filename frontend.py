@@ -1,6 +1,8 @@
 import os
+import time
 from typing import Any, Dict, Optional
 
+import numpy as np
 import pandas as pd
 import plotly.graph_objects as go
 import requests
@@ -10,6 +12,31 @@ API_URL = os.getenv("API_URL", "https://monte-carlo-risk-engine.onrender.com")
 REQUEST_TIMEOUT_SECONDS = 100
 
 st.set_page_config(page_title="Monte Carlo Risk Engine", layout="wide")
+
+
+def build_visual_paths(
+    initial_value: float,
+    expected_final_value: float,
+    years: float,
+    n_paths: int = 60,
+    n_steps: int = 120,
+) -> np.ndarray:
+    visual_years = max(years, 1e-6)
+    dt = visual_years / n_steps
+
+    implied_mu = np.log(max(expected_final_value, 1.0) / max(initial_value, 1.0)) / visual_years
+    visual_sigma = 0.25
+
+    random_noise = np.random.normal(0.0, 1.0, size=(n_steps, n_paths))
+    increment = (implied_mu - 0.5 * visual_sigma**2) * dt + visual_sigma * np.sqrt(dt) * random_noise
+    growth = np.exp(increment)
+
+    paths = np.zeros((n_steps + 1, n_paths))
+    paths[0] = initial_value
+    for step in range(1, n_steps + 1):
+        paths[step] = paths[step - 1] * growth[step - 1]
+
+    return paths
 
 
 @st.cache_data(ttl=30)
@@ -155,6 +182,26 @@ if st.button("Run Risk Simulation", type="primary"):
             ).set_index("Metric")
 
             st.bar_chart(chart_df)
+
+            st.divider()
+            st.subheader("Live Random Walk Preview")
+            st.caption("Sampled animation (60 paths) for visual intuition. Risk metrics still come from full backend simulation.")
+
+            visual_paths = build_visual_paths(
+                initial_value=float(data["initial_value"]),
+                expected_final_value=float(data["expected_final_value"]),
+                years=float(data["years"]),
+                n_paths=60,
+                n_steps=120,
+            )
+
+            path_names = [f"Path {index + 1}" for index in range(visual_paths.shape[1])]
+            animate_placeholder = st.empty()
+
+            for step in range(5, visual_paths.shape[0] + 1, 4):
+                frame = pd.DataFrame(visual_paths[:step], columns=path_names)
+                animate_placeholder.line_chart(frame)
+                time.sleep(0.03)
 
             st.divider()
             st.subheader("Risk Dashboard")
