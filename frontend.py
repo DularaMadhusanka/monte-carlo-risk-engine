@@ -6,7 +6,7 @@ import requests
 import streamlit as st
 
 API_URL = os.getenv("API_URL", "https://monte-carlo-risk-engine.onrender.com")
-REQUEST_TIMEOUT_SECONDS = 20
+REQUEST_TIMEOUT_SECONDS = 100
 
 st.set_page_config(page_title="Monte Carlo Risk Engine", layout="wide")
 
