@@ -5,7 +5,7 @@ import pandas as pd
 import requests
 import streamlit as st
 
-DEFAULT_API_URL = os.getenv("API_URL", "http://127.0.0.1:8000")
+API_URL = os.getenv("API_URL", "http://127.0.0.1:8000")
 REQUEST_TIMEOUT_SECONDS = 20
 
 st.set_page_config(page_title="Monte Carlo Risk Engine", layout="wide")
@@ -41,7 +41,7 @@ st.title("📈 Portfolio Risk Engine (Monte Carlo)")
 st.write("Powered by FastAPI & Geometric Brownian Motion")
 
 st.sidebar.header("Simulation Parameters")
-api_url = st.sidebar.text_input("FastAPI URL", value=DEFAULT_API_URL)
+api_url = st.sidebar.text_input("FastAPI URL", value=API_URL)
 initial_value = st.sidebar.number_input(
     "Initial Investment ($)",
     min_value=1000,
