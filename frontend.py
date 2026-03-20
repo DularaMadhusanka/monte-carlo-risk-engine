@@ -141,134 +141,136 @@ if st.button("Run Risk Simulation", type="primary"):
             st.success("Simulation Complete!")
 
             st.subheader(f"Simulation Results (As of {data['params_as_of']})")
-
-            col1, col2, col3 = st.columns(3)
-            col1.metric("Expected Portfolio Value", f"${data['expected_final_value']:,.2f}")
-            col2.metric("Median Value", f"${data['median_final_value']:,.2f}")
-            col3.metric(
-                "Max Potential Loss (95%)",
-                f"${data['max_potential_loss_95']:,.2f}",
-                delta="- Risk",
-                delta_color="inverse",
+            tab_summary, tab_animation, tab_dashboard, tab_raw = st.tabs(
+                ["Summary", "Animation", "Dashboard", "Raw Data"]
             )
 
-            st.divider()
-
-            st.markdown("### Tail Risk Metrics")
-            col4, col5 = st.columns(2)
-            col4.info(
-                f"**Value at Risk (95% VaR):** ${data['var_95_threshold']:,.2f}\n\n"
-                "*We are 95% confident the portfolio will not drop below this value.*"
-            )
-            col5.error(
-                f"**Expected Shortfall (95% CVaR):** ${data['cvar_95_expected_shortfall']:,.2f}\n\n"
-                "*If the worst 5% scenario happens, this is the average expected value.*"
-            )
-
-            st.divider()
-            st.markdown("### Outcome Snapshot")
-
-            chart_df = pd.DataFrame(
-                {
-                    "Metric": ["Initial", "Expected", "Median", "VaR 95%", "CVaR 95%"],
-                    "Portfolio Value": [
-                        float(data["initial_value"]),
-                        float(data["expected_final_value"]),
-                        float(data["median_final_value"]),
-                        float(data["var_95_threshold"]),
-                        float(data["cvar_95_expected_shortfall"]),
-                    ],
-                }
-            ).set_index("Metric")
-
-            st.bar_chart(chart_df)
-
-            st.divider()
-            st.subheader("Live Random Walk Preview")
-            st.caption("Sampled animation (60 paths) for visual intuition. Risk metrics still come from full backend simulation.")
-
-            visual_paths = build_visual_paths(
-                initial_value=float(data["initial_value"]),
-                expected_final_value=float(data["expected_final_value"]),
-                years=float(data["years"]),
-                n_paths=60,
-                n_steps=120,
-            )
-
-            path_names = [f"Path {index + 1}" for index in range(visual_paths.shape[1])]
-            animate_placeholder = st.empty()
-
-            for step in range(5, visual_paths.shape[0] + 1, 4):
-                frame = pd.DataFrame(visual_paths[:step], columns=path_names)
-                animate_placeholder.line_chart(frame)
-                time.sleep(0.03)
-
-            st.divider()
-            st.subheader("Risk Dashboard")
-
-            potential_loss_95 = float(data.get("max_potential_loss_95", 0.0))
-            gauge_max = max(potential_loss_95 * 2.0, 1000.0)
-
-            gauge_fig = go.Figure(
-                go.Indicator(
-                    mode="gauge+number",
-                    value=potential_loss_95,
-                    title={"text": "Max Potential Loss (95%)", "font": {"size": 22}},
-                    number={"prefix": "$", "valueformat": ",.0f"},
-                    gauge={
-                        "axis": {"range": [0, gauge_max]},
-                        "bar": {"color": "darkred"},
-                        "steps": [
-                            {"range": [0, gauge_max * 0.4], "color": "#d6f5d6"},
-                            {"range": [gauge_max * 0.4, gauge_max * 0.7], "color": "#fff7cc"},
-                            {"range": [gauge_max * 0.7, gauge_max], "color": "#ffd6d6"},
-                        ],
-                    },
+            with tab_summary:
+                col1, col2, col3 = st.columns(3)
+                col1.metric("Expected Portfolio Value", f"${data['expected_final_value']:,.2f}")
+                col2.metric("Median Value", f"${data['median_final_value']:,.2f}")
+                col3.metric(
+                    "Max Potential Loss (95%)",
+                    f"${data['max_potential_loss_95']:,.2f}",
+                    delta="- Risk",
+                    delta_color="inverse",
                 )
-            )
-            gauge_fig.update_layout(height=360, margin=dict(l=10, r=10, t=50, b=10))
 
-            allocation_fig = go.Figure(
-                data=[
-                    go.Pie(
-                        labels=asset_labels,
-                        values=normalized_weights,
-                        hole=0.55,
-                        textinfo="label+percent",
-                    )
-                ]
-            )
-            allocation_fig.update_layout(
-                title="Portfolio Allocation", height=360, margin=dict(l=10, r=10, t=50, b=10)
-            )
+                st.markdown("### Tail Risk Metrics")
+                col4, col5 = st.columns(2)
+                col4.info(
+                    f"**Value at Risk (95% VaR):** ${data['var_95_threshold']:,.2f}\n\n"
+                    "*We are 95% confident the portfolio will not drop below this value.*"
+                )
+                col5.error(
+                    f"**Expected Shortfall (95% CVaR):** ${data['cvar_95_expected_shortfall']:,.2f}\n\n"
+                    "*If the worst 5% scenario happens, this is the average expected value.*"
+                )
 
-            dashboard_col1, dashboard_col2 = st.columns(2)
-            dashboard_col1.plotly_chart(gauge_fig, use_container_width=True)
-            dashboard_col2.plotly_chart(allocation_fig, use_container_width=True)
-
-            risk_bar_fig = go.Figure(
-                data=[
-                    go.Bar(
-                        x=["Expected", "Median", "VaR 95%", "CVaR 95%"],
-                        y=[
+                st.markdown("### Outcome Snapshot")
+                chart_df = pd.DataFrame(
+                    {
+                        "Metric": ["Initial", "Expected", "Median", "VaR 95%", "CVaR 95%"],
+                        "Portfolio Value": [
+                            float(data["initial_value"]),
                             float(data["expected_final_value"]),
                             float(data["median_final_value"]),
                             float(data["var_95_threshold"]),
                             float(data["cvar_95_expected_shortfall"]),
                         ],
-                        marker_color=["#4e79a7", "#59a14f", "#f28e2b", "#e15759"],
-                    )
-                ]
-            )
-            risk_bar_fig.update_layout(
-                title="Portfolio Value Comparison",
-                yaxis_title="Value ($)",
-                height=360,
-                margin=dict(l=10, r=10, t=50, b=10),
-            )
-            st.plotly_chart(risk_bar_fig, use_container_width=True)
+                    }
+                ).set_index("Metric")
+                st.bar_chart(chart_df)
 
-            with st.expander("View Raw Math/JSON Data"):
+            with tab_animation:
+                st.subheader("Live Random Walk Preview")
+                st.caption(
+                    "Sampled animation (60 paths) for visual intuition. "
+                    "Risk metrics still come from full backend simulation."
+                )
+
+                visual_paths = build_visual_paths(
+                    initial_value=float(data["initial_value"]),
+                    expected_final_value=float(data["expected_final_value"]),
+                    years=float(data["years"]),
+                    n_paths=60,
+                    n_steps=120,
+                )
+
+                path_names = [f"Path {index + 1}" for index in range(visual_paths.shape[1])]
+                animate_placeholder = st.empty()
+
+                for step in range(5, visual_paths.shape[0] + 1, 4):
+                    frame = pd.DataFrame(visual_paths[:step], columns=path_names)
+                    animate_placeholder.line_chart(frame)
+                    time.sleep(0.03)
+
+            with tab_dashboard:
+                st.subheader("Risk Dashboard")
+
+                potential_loss_95 = float(data.get("max_potential_loss_95", 0.0))
+                gauge_max = max(potential_loss_95 * 2.0, 1000.0)
+
+                gauge_fig = go.Figure(
+                    go.Indicator(
+                        mode="gauge+number",
+                        value=potential_loss_95,
+                        title={"text": "Max Potential Loss (95%)", "font": {"size": 22}},
+                        number={"prefix": "$", "valueformat": ",.0f"},
+                        gauge={
+                            "axis": {"range": [0, gauge_max]},
+                            "bar": {"color": "darkred"},
+                            "steps": [
+                                {"range": [0, gauge_max * 0.4], "color": "#d6f5d6"},
+                                {"range": [gauge_max * 0.4, gauge_max * 0.7], "color": "#fff7cc"},
+                                {"range": [gauge_max * 0.7, gauge_max], "color": "#ffd6d6"},
+                            ],
+                        },
+                    )
+                )
+                gauge_fig.update_layout(height=360, margin=dict(l=10, r=10, t=50, b=10))
+
+                allocation_fig = go.Figure(
+                    data=[
+                        go.Pie(
+                            labels=asset_labels,
+                            values=normalized_weights,
+                            hole=0.55,
+                            textinfo="label+percent",
+                        )
+                    ]
+                )
+                allocation_fig.update_layout(
+                    title="Portfolio Allocation", height=360, margin=dict(l=10, r=10, t=50, b=10)
+                )
+
+                dashboard_col1, dashboard_col2 = st.columns(2)
+                dashboard_col1.plotly_chart(gauge_fig, use_container_width=True)
+                dashboard_col2.plotly_chart(allocation_fig, use_container_width=True)
+
+                risk_bar_fig = go.Figure(
+                    data=[
+                        go.Bar(
+                            x=["Expected", "Median", "VaR 95%", "CVaR 95%"],
+                            y=[
+                                float(data["expected_final_value"]),
+                                float(data["median_final_value"]),
+                                float(data["var_95_threshold"]),
+                                float(data["cvar_95_expected_shortfall"]),
+                            ],
+                            marker_color=["#4e79a7", "#59a14f", "#f28e2b", "#e15759"],
+                        )
+                    ]
+                )
+                risk_bar_fig.update_layout(
+                    title="Portfolio Value Comparison",
+                    yaxis_title="Value ($)",
+                    height=360,
+                    margin=dict(l=10, r=10, t=50, b=10),
+                )
+                st.plotly_chart(risk_bar_fig, use_container_width=True)
+
+            with tab_raw:
                 st.json(data)
 
         except RuntimeError as exc:
