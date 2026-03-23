@@ -107,6 +107,10 @@ streamlit run frontend.py
 
 The dashboard calls the FastAPI backend (`/health` and `/simulate`) and lets users change `initial_value`, `years`, and `sims` interactively.
 
+Current deployment limits (optimized for lightweight backends):
+- `years`: 1 to 5
+- `sims`: 100 to 5000 (default 1000)
+
 ### 1. Single Stock Backtest
 ```bash
 python monte.py

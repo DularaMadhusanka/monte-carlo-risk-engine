@@ -78,15 +78,17 @@ initial_value = st.sidebar.number_input(
 )
 years = st.sidebar.slider(
     "Time Horizon (Years)",
-    min_value=0.5,
-    max_value=5.0,
-    value=1.0,
-    step=0.5,
+    min_value=1,
+    max_value=5,
+    value=1,
+    step=1,
 )
-sims = st.sidebar.select_slider(
+sims = st.sidebar.slider(
     "Number of Simulations",
-    options=[1000, 2000, 5000, 10000, 50000],
-    value=2000,
+    min_value=100,
+    max_value=5000,
+    value=1000,
+    step=100,
 )
 
 try:

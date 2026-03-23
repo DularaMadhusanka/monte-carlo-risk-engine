@@ -13,8 +13,8 @@ DEFAULT_PARAMS_PATH = os.getenv("PARAMS_PATH", "artifacts/market_params.npz")
 
 class SimulationRequest(BaseModel):
     initial_value: float = Field(gt=0, description="Initial portfolio value")
-    years: float = Field(default=1.0, gt=0, le=10, description="Simulation horizon in years")
-    sims: int = Field(default=2000, gt=0, le=200000, description="Number of Monte Carlo paths")
+    years: float = Field(default=1.0, gt=0, le=5, description="Simulation horizon in years")
+    sims: int = Field(default=1000, gt=0, le=5000, description="Number of Monte Carlo paths")
     seed: Optional[int] = Field(default=None, description="Optional seed for reproducibility")
     weights: Optional[List[float]] = Field(
         default=None,
