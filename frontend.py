@@ -188,13 +188,11 @@ if st.button("Run Risk Simulation", type="primary"):
 
             with tab_summary:
                 col1, col2, col3 = st.columns(3)
-                col1.metric("Expected Portfolio Value", f"${data['expected_final_value']:,.2f}")
+                col1.metric("Initial Portfolio Value", f"${data['initial_value']:,.2f}")
                 col2.metric("Median Value", f"${data['median_final_value']:,.2f}")
                 col3.metric(
-                    "Max Potential Loss (95%)",
-                    f"${data['max_potential_loss_95']:,.2f}",
-                    delta="- Risk",
-                    delta_color="inverse",
+                    "Expected Shortfall (95% CVaR)",
+                    f"${data['cvar_95_expected_shortfall']:,.2f}",
                 )
 
                 st.markdown("### Tail Risk Metrics")
