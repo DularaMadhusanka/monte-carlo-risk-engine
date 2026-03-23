@@ -159,6 +159,11 @@ Where:
 - **σ**: Volatility (annualized)
 - **dW**: Wiener process increment
 
+### Fat-Tail Modeling
+To better reflect real market extremes, the runtime simulation engine uses Student's t-distributed shocks with `ν=4` (instead of Gaussian shocks), then variance-normalizes shocks before applying covariance correlation.
+
+This improves tail-risk realism for VaR/CVaR while keeping overall volatility calibration stable.
+
 ### Correlation Handling
 Multi-asset simulations use Cholesky decomposition to generate correlated random shocks, preserving the covariance structure between assets.
 

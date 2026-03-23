@@ -4,6 +4,9 @@ import json
 import numpy as np
 
 
+STUDENT_T_DOF = 4
+
+
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         description="Run Monte Carlo simulation from cached market parameters."
@@ -70,7 +73,8 @@ def main() -> None:
     drift_term = (annual_mu - 0.5 * np.diag(annual_cov)) * dt
 
     rng = np.random.default_rng(args.seed)
-    z = rng.normal(0.0, 1.0, size=(steps, args.sims, n_assets))
+    t_scaling = np.sqrt((STUDENT_T_DOF - 2.0) / STUDENT_T_DOF)
+    z = rng.standard_t(df=STUDENT_T_DOF, size=(steps, args.sims, n_assets)) * t_scaling
     correlated_shocks = (z @ chol_L.T) * np.sqrt(dt)
 
     daily_growth = np.exp(drift_term.reshape(1, 1, -1) + correlated_shocks)
