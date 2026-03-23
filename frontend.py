@@ -39,6 +39,19 @@ def build_visual_paths(
     return paths
 
 
+def estimate_best_case_value(expected_final_value: float, median_final_value: float) -> float:
+    safe_expected = max(float(expected_final_value), 1e-9)
+    safe_median = max(float(median_final_value), 1e-9)
+
+    if safe_expected <= safe_median:
+        return safe_expected
+
+    sigma_sq = max(0.0, 2.0 * np.log(safe_expected / safe_median))
+    sigma = np.sqrt(sigma_sq)
+    z_95 = 1.6448536269514722
+    return float(safe_median * np.exp(z_95 * sigma))
+
+
 @st.cache_data(ttl=30)
 def get_health(api_url: str) -> Dict[str, Any]:
     response = requests.get(f"{api_url}/health", timeout=REQUEST_TIMEOUT_SECONDS)
@@ -143,6 +156,32 @@ if st.button("Run Risk Simulation", type="primary"):
             st.success("Simulation Complete!")
 
             st.subheader(f"Simulation Results (As of {data['params_as_of']})")
+            expected_val = float(data["expected_final_value"])
+            var_95_loss = float(data["max_potential_loss_95"])
+            best_case = estimate_best_case_value(
+                expected_final_value=expected_val,
+                median_final_value=float(data["median_final_value"]),
+            )
+
+            st.divider()
+            st.subheader("Portfolio Risk Summary")
+            kpi_col1, kpi_col2, kpi_col3 = st.columns(3)
+            with kpi_col1:
+                st.metric(label="Expected Portfolio Value", value=f"${expected_val:,.2f}")
+            with kpi_col2:
+                st.metric(
+                    label="95% Value at Risk (VaR)",
+                    value=f"-${var_95_loss:,.2f}",
+                    delta="-Risk",
+                    delta_color="inverse",
+                )
+            with kpi_col3:
+                st.metric(
+                    label="Best Case Scenario (5%)",
+                    value=f"${best_case:,.2f}",
+                    delta="+Upside",
+                )
+
             tab_summary, tab_animation, tab_dashboard, tab_raw = st.tabs(
                 ["Summary", "Animation", "Dashboard", "Raw Data"]
             )
