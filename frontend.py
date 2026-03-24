@@ -7,6 +7,8 @@ import pandas as pd
 import plotly.graph_objects as go
 import requests
 import streamlit as st
+import yfinance as yf
+from plotly.subplots import make_subplots
 
 API_URL = os.getenv("API_URL", "https://monte-carlo-risk-engine.onrender.com")
 REQUEST_TIMEOUT_SECONDS = 100
@@ -78,6 +80,367 @@ def call_simulation(api_url: str, payload: Dict[str, Any]) -> Dict[str, Any]:
     raise RuntimeError(f"API Error ({response.status_code}): {detail}")
 
 
+@st.cache_data(ttl=900)
+def get_historical_ohlcv(ticker: str, period: str = "6mo", interval: str = "1d") -> pd.DataFrame:
+    history = yf.Ticker(ticker).history(period=period, interval=interval, auto_adjust=False)
+    if history.empty:
+        return pd.DataFrame()
+
+    required_cols = ["Open", "High", "Low", "Close", "Volume"]
+    available_cols = [col for col in required_cols if col in history.columns]
+    if len(available_cols) < len(required_cols):
+        return pd.DataFrame()
+
+    ohlcv = history[required_cols].dropna().copy()
+    if ohlcv.empty:
+        return pd.DataFrame()
+
+    if getattr(ohlcv.index, "tz", None) is not None:
+        ohlcv.index = ohlcv.index.tz_localize(None)
+    return ohlcv
+
+
+def build_candlestick_volume_figure(ohlcv: pd.DataFrame, ticker: str) -> go.Figure:
+    fig = make_subplots(
+        rows=2,
+        cols=1,
+        shared_xaxes=True,
+        row_heights=[0.72, 0.28],
+        vertical_spacing=0.04,
+    )
+
+    fig.add_trace(
+        go.Candlestick(
+            x=ohlcv.index,
+            open=ohlcv["Open"],
+            high=ohlcv["High"],
+            low=ohlcv["Low"],
+            close=ohlcv["Close"],
+            name=f"{ticker} OHLC",
+            increasing_line_color="#00cc96",
+            decreasing_line_color="#ef553b",
+        ),
+        row=1,
+        col=1,
+    )
+
+    volume_colors = np.where(ohlcv["Close"] >= ohlcv["Open"], "#00cc96", "#ef553b")
+    fig.add_trace(
+        go.Bar(
+            x=ohlcv.index,
+            y=ohlcv["Volume"],
+            marker_color=volume_colors,
+            name="Volume",
+            opacity=0.85,
+        ),
+        row=2,
+        col=1,
+    )
+
+    fig.update_layout(
+        template="plotly_dark",
+        height=620,
+        margin=dict(l=10, r=10, t=50, b=10),
+        title=f"{ticker} Historical Price (OHLC) + Volume",
+        xaxis_rangeslider_visible=False,
+        legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1),
+    )
+    fig.update_yaxes(title_text="Price ($)", row=1, col=1)
+    fig.update_yaxes(title_text="Volume", row=2, col=1)
+    return fig
+
+
+@st.cache_data(ttl=900)
+def get_synthetic_portfolio_ohlcv(
+    tickers: list[str],
+    weights: list[float],
+    period: str = "6mo",
+    interval: str = "1d",
+) -> pd.DataFrame:
+    if len(tickers) == 0 or len(tickers) != len(weights):
+        return pd.DataFrame()
+
+    ticker_frames: Dict[str, pd.DataFrame] = {}
+    for ticker in tickers:
+        ticker_ohlcv = get_historical_ohlcv(ticker=ticker, period=period, interval=interval)
+        if ticker_ohlcv.empty:
+            return pd.DataFrame()
+        ticker_frames[ticker] = ticker_ohlcv
+
+    combined = pd.concat(ticker_frames, axis=1, join="inner").dropna()
+    if combined.empty:
+        return pd.DataFrame()
+
+    weights_array = np.array(weights, dtype=float)
+    if np.sum(weights_array) <= 0:
+        return pd.DataFrame()
+    weights_array = weights_array / np.sum(weights_array)
+
+    base_notional = 100.0
+    initial_closes = np.array(
+        [float(combined[(ticker, "Close")].iloc[0]) for ticker in tickers],
+        dtype=float,
+    )
+    shares = (base_notional * weights_array) / np.maximum(initial_closes, 1e-9)
+
+    synthetic_data: Dict[str, np.ndarray] = {}
+    for field in ["Open", "High", "Low", "Close"]:
+        field_matrix = np.column_stack(
+            [combined[(ticker, field)].to_numpy(dtype=float) for ticker in tickers]
+        )
+        synthetic_data[field] = field_matrix @ shares
+
+    volume_matrix = np.column_stack(
+        [combined[(ticker, "Volume")].to_numpy(dtype=float) for ticker in tickers]
+    )
+    synthetic_data["Volume"] = volume_matrix @ weights_array
+
+    return pd.DataFrame(synthetic_data, index=combined.index)
+
+
+def render_simulation_results(
+    data: Dict[str, Any],
+    asset_labels: list[str],
+    normalized_weights: list[float],
+    show_success: bool = False,
+) -> None:
+    if show_success:
+        st.success("Simulation Complete!")
+
+    st.subheader(f"Simulation Results (As of {data['params_as_of']})")
+
+    st.divider()
+    st.subheader("Historical Market Context")
+    chart_col1, chart_col2, chart_col3 = st.columns([2, 1, 1])
+
+    ticker_default = st.session_state["chart_selected_ticker"]
+    if ticker_default not in asset_labels:
+        ticker_default = asset_labels[0]
+
+    period_options = ["1mo", "3mo", "6mo", "1y", "2y", "5y"]
+    period_default = st.session_state["chart_selected_period"]
+    if period_default not in period_options:
+        period_default = "6mo"
+
+    mode_options = ["Both", "Asset Only", "Portfolio Only"]
+    mode_default = st.session_state["chart_selected_mode"]
+    if mode_default not in mode_options:
+        mode_default = "Both"
+
+    with chart_col1:
+        selected_ticker = st.selectbox(
+            "Asset",
+            options=asset_labels,
+            index=asset_labels.index(ticker_default),
+        )
+    with chart_col2:
+        selected_period = st.selectbox(
+            "History Range",
+            options=period_options,
+            index=period_options.index(period_default),
+        )
+    with chart_col3:
+        chart_mode = st.selectbox(
+            "Chart View",
+            options=mode_options,
+            index=mode_options.index(mode_default),
+        )
+
+    st.session_state["chart_selected_ticker"] = selected_ticker
+    st.session_state["chart_selected_period"] = selected_period
+    st.session_state["chart_selected_mode"] = chart_mode
+
+    if chart_mode in ("Both", "Asset Only"):
+        with st.spinner(f"Loading {selected_ticker} candles..."):
+            ohlcv = get_historical_ohlcv(selected_ticker, period=selected_period)
+
+        if ohlcv.empty:
+            st.warning(
+                f"No OHLCV data available for {selected_ticker} in {selected_period}. "
+                "Try a different period or asset."
+            )
+        else:
+            candle_fig = build_candlestick_volume_figure(ohlcv, selected_ticker)
+            st.plotly_chart(candle_fig, use_container_width=True)
+
+    if chart_mode in ("Both", "Portfolio Only"):
+        with st.spinner("Building synthetic portfolio candles..."):
+            portfolio_ohlcv = get_synthetic_portfolio_ohlcv(
+                tickers=asset_labels,
+                weights=normalized_weights,
+                period=selected_period,
+            )
+
+        if portfolio_ohlcv.empty:
+            st.warning("Unable to build synthetic portfolio OHLCV for the selected period.")
+        else:
+            portfolio_fig = build_candlestick_volume_figure(
+                portfolio_ohlcv,
+                "Synthetic Portfolio",
+            )
+            st.plotly_chart(portfolio_fig, use_container_width=True)
+            st.caption(
+                "Synthetic portfolio candles are built from fixed-share weighted prices "
+                "(based on initial weights) across the selected history range."
+            )
+
+    expected_val = float(data["expected_final_value"])
+    var_95_loss = float(data["max_potential_loss_95"])
+    best_case = estimate_best_case_value(
+        expected_final_value=expected_val,
+        median_final_value=float(data["median_final_value"]),
+    )
+
+    st.divider()
+    st.subheader("Portfolio Risk Summary")
+    kpi_col1, kpi_col2, kpi_col3 = st.columns(3)
+    with kpi_col1:
+        st.metric(label="Expected Portfolio Value", value=f"${expected_val:,.2f}")
+    with kpi_col2:
+        st.metric(
+            label="95% Value at Risk (VaR)",
+            value=f"-${var_95_loss:,.2f}",
+            delta="-Risk",
+            delta_color="inverse",
+        )
+    with kpi_col3:
+        st.metric(
+            label="Best Case Scenario (5%)",
+            value=f"${best_case:,.2f}",
+            delta="+Upside",
+        )
+
+    tab_summary, tab_animation, tab_dashboard, tab_raw = st.tabs(
+        ["Summary", "Animation", "Dashboard", "Raw Data"]
+    )
+
+    with tab_summary:
+        col1, col2, col3 = st.columns(3)
+        col1.metric("Initial Portfolio Value", f"${data['initial_value']:,.2f}")
+        col2.metric("Median Value", f"${data['median_final_value']:,.2f}")
+        col3.metric(
+            "Expected Shortfall (95% CVaR)",
+            f"${data['cvar_95_expected_shortfall']:,.2f}",
+        )
+
+        st.markdown("### Tail Risk Metrics")
+        col4, col5 = st.columns(2)
+        col4.info(
+            f"**Value at Risk (95% VaR):** ${data['var_95_threshold']:,.2f}\n\n"
+            "*We are 95% confident the portfolio will not drop below this value.*"
+        )
+        col5.error(
+            f"**Expected Shortfall (95% CVaR):** ${data['cvar_95_expected_shortfall']:,.2f}\n\n"
+            "*If the worst 5% scenario happens, this is the average expected value.*"
+        )
+
+        st.markdown("### Outcome Snapshot")
+        chart_df = pd.DataFrame(
+            {
+                "Metric": ["Initial", "Expected", "Median", "VaR 95%", "CVaR 95%"],
+                "Portfolio Value": [
+                    float(data["initial_value"]),
+                    float(data["expected_final_value"]),
+                    float(data["median_final_value"]),
+                    float(data["var_95_threshold"]),
+                    float(data["cvar_95_expected_shortfall"]),
+                ],
+            }
+        ).set_index("Metric")
+        st.bar_chart(chart_df)
+
+    with tab_animation:
+        st.subheader("Live Random Walk Preview")
+        st.caption(
+            "Sampled animation (60 paths) for visual intuition. "
+            "Risk metrics still come from full backend simulation."
+        )
+
+        visual_paths = build_visual_paths(
+            initial_value=float(data["initial_value"]),
+            expected_final_value=float(data["expected_final_value"]),
+            years=float(data["years"]),
+            n_paths=60,
+            n_steps=120,
+        )
+
+        path_names = [f"Path {index + 1}" for index in range(visual_paths.shape[1])]
+        animate_placeholder = st.empty()
+
+        for step in range(5, visual_paths.shape[0] + 1, 4):
+            frame = pd.DataFrame(visual_paths[:step], columns=path_names)
+            animate_placeholder.line_chart(frame)
+            time.sleep(0.03)
+
+    with tab_dashboard:
+        st.subheader("Risk Dashboard")
+
+        potential_loss_95 = float(data.get("max_potential_loss_95", 0.0))
+        gauge_max = max(potential_loss_95 * 2.0, 1000.0)
+
+        gauge_fig = go.Figure(
+            go.Indicator(
+                mode="gauge+number",
+                value=potential_loss_95,
+                title={"text": "Max Potential Loss (95%)", "font": {"size": 22}},
+                number={"prefix": "$", "valueformat": ",.0f"},
+                gauge={
+                    "axis": {"range": [0, gauge_max]},
+                    "bar": {"color": "darkred"},
+                    "steps": [
+                        {"range": [0, gauge_max * 0.4], "color": "#d6f5d6"},
+                        {"range": [gauge_max * 0.4, gauge_max * 0.7], "color": "#fff7cc"},
+                        {"range": [gauge_max * 0.7, gauge_max], "color": "#ffd6d6"},
+                    ],
+                },
+            )
+        )
+        gauge_fig.update_layout(height=360, margin=dict(l=10, r=10, t=50, b=10))
+
+        allocation_fig = go.Figure(
+            data=[
+                go.Pie(
+                    labels=asset_labels,
+                    values=normalized_weights,
+                    hole=0.55,
+                    textinfo="label+percent",
+                )
+            ]
+        )
+        allocation_fig.update_layout(
+            title="Portfolio Allocation", height=360, margin=dict(l=10, r=10, t=50, b=10)
+        )
+
+        dashboard_col1, dashboard_col2 = st.columns(2)
+        dashboard_col1.plotly_chart(gauge_fig, use_container_width=True)
+        dashboard_col2.plotly_chart(allocation_fig, use_container_width=True)
+
+        risk_bar_fig = go.Figure(
+            data=[
+                go.Bar(
+                    x=["Expected", "Median", "VaR 95%", "CVaR 95%"],
+                    y=[
+                        float(data["expected_final_value"]),
+                        float(data["median_final_value"]),
+                        float(data["var_95_threshold"]),
+                        float(data["cvar_95_expected_shortfall"]),
+                    ],
+                    marker_color=["#4e79a7", "#59a14f", "#f28e2b", "#e15759"],
+                )
+            ]
+        )
+        risk_bar_fig.update_layout(
+            title="Portfolio Value Comparison",
+            yaxis_title="Value ($)",
+            height=360,
+            margin=dict(l=10, r=10, t=50, b=10),
+        )
+        st.plotly_chart(risk_bar_fig, use_container_width=True)
+
+    with tab_raw:
+        st.json(data)
+
+
 st.title("📈 Portfolio Risk Engine (Monte Carlo)")
 st.write("Powered by FastAPI & Geometric Brownian Motion")
 
@@ -141,7 +504,34 @@ st.sidebar.caption(
     f"{asset_labels[2]} {normalized_weights[2]:.1%}"
 )
 
-if st.button("Run Risk Simulation", type="primary"):
+if "chart_selected_ticker" not in st.session_state:
+    st.session_state["chart_selected_ticker"] = asset_labels[0]
+if "chart_selected_period" not in st.session_state:
+    st.session_state["chart_selected_period"] = "6mo"
+if "chart_selected_mode" not in st.session_state:
+    st.session_state["chart_selected_mode"] = "Both"
+
+action_col1, action_col2, action_col3 = st.columns([2, 1, 1])
+run_clicked = action_col1.button("Run Risk Simulation", type="primary")
+clear_clicked = action_col2.button("Clear Saved Simulation")
+clear_all_clicked = action_col3.button("Clear All Dashboard State")
+
+if clear_clicked:
+    st.session_state.pop("last_simulation_data", None)
+    st.session_state.pop("last_simulation_asset_labels", None)
+    st.session_state.pop("last_simulation_weights", None)
+    st.info("Saved simulation has been cleared.")
+
+if clear_all_clicked:
+    st.session_state.pop("last_simulation_data", None)
+    st.session_state.pop("last_simulation_asset_labels", None)
+    st.session_state.pop("last_simulation_weights", None)
+    st.session_state["chart_selected_ticker"] = asset_labels[0]
+    st.session_state["chart_selected_period"] = "6mo"
+    st.session_state["chart_selected_mode"] = "Both"
+    st.info("Dashboard state reset to defaults.")
+
+if run_clicked:
     payload = {
         "initial_value": float(initial_value),
         "years": float(years),
@@ -152,166 +542,9 @@ if st.button("Run Risk Simulation", type="primary"):
     with st.spinner("Calculating parallel universes..."):
         try:
             data = call_simulation(api_url, payload)
-
-            st.success("Simulation Complete!")
-
-            st.subheader(f"Simulation Results (As of {data['params_as_of']})")
-            expected_val = float(data["expected_final_value"])
-            var_95_loss = float(data["max_potential_loss_95"])
-            best_case = estimate_best_case_value(
-                expected_final_value=expected_val,
-                median_final_value=float(data["median_final_value"]),
-            )
-
-            st.divider()
-            st.subheader("Portfolio Risk Summary")
-            kpi_col1, kpi_col2, kpi_col3 = st.columns(3)
-            with kpi_col1:
-                st.metric(label="Expected Portfolio Value", value=f"${expected_val:,.2f}")
-            with kpi_col2:
-                st.metric(
-                    label="95% Value at Risk (VaR)",
-                    value=f"-${var_95_loss:,.2f}",
-                    delta="-Risk",
-                    delta_color="inverse",
-                )
-            with kpi_col3:
-                st.metric(
-                    label="Best Case Scenario (5%)",
-                    value=f"${best_case:,.2f}",
-                    delta="+Upside",
-                )
-
-            tab_summary, tab_animation, tab_dashboard, tab_raw = st.tabs(
-                ["Summary", "Animation", "Dashboard", "Raw Data"]
-            )
-
-            with tab_summary:
-                col1, col2, col3 = st.columns(3)
-                col1.metric("Initial Portfolio Value", f"${data['initial_value']:,.2f}")
-                col2.metric("Median Value", f"${data['median_final_value']:,.2f}")
-                col3.metric(
-                    "Expected Shortfall (95% CVaR)",
-                    f"${data['cvar_95_expected_shortfall']:,.2f}",
-                )
-
-                st.markdown("### Tail Risk Metrics")
-                col4, col5 = st.columns(2)
-                col4.info(
-                    f"**Value at Risk (95% VaR):** ${data['var_95_threshold']:,.2f}\n\n"
-                    "*We are 95% confident the portfolio will not drop below this value.*"
-                )
-                col5.error(
-                    f"**Expected Shortfall (95% CVaR):** ${data['cvar_95_expected_shortfall']:,.2f}\n\n"
-                    "*If the worst 5% scenario happens, this is the average expected value.*"
-                )
-
-                st.markdown("### Outcome Snapshot")
-                chart_df = pd.DataFrame(
-                    {
-                        "Metric": ["Initial", "Expected", "Median", "VaR 95%", "CVaR 95%"],
-                        "Portfolio Value": [
-                            float(data["initial_value"]),
-                            float(data["expected_final_value"]),
-                            float(data["median_final_value"]),
-                            float(data["var_95_threshold"]),
-                            float(data["cvar_95_expected_shortfall"]),
-                        ],
-                    }
-                ).set_index("Metric")
-                st.bar_chart(chart_df)
-
-            with tab_animation:
-                st.subheader("Live Random Walk Preview")
-                st.caption(
-                    "Sampled animation (60 paths) for visual intuition. "
-                    "Risk metrics still come from full backend simulation."
-                )
-
-                visual_paths = build_visual_paths(
-                    initial_value=float(data["initial_value"]),
-                    expected_final_value=float(data["expected_final_value"]),
-                    years=float(data["years"]),
-                    n_paths=60,
-                    n_steps=120,
-                )
-
-                path_names = [f"Path {index + 1}" for index in range(visual_paths.shape[1])]
-                animate_placeholder = st.empty()
-
-                for step in range(5, visual_paths.shape[0] + 1, 4):
-                    frame = pd.DataFrame(visual_paths[:step], columns=path_names)
-                    animate_placeholder.line_chart(frame)
-                    time.sleep(0.03)
-
-            with tab_dashboard:
-                st.subheader("Risk Dashboard")
-
-                potential_loss_95 = float(data.get("max_potential_loss_95", 0.0))
-                gauge_max = max(potential_loss_95 * 2.0, 1000.0)
-
-                gauge_fig = go.Figure(
-                    go.Indicator(
-                        mode="gauge+number",
-                        value=potential_loss_95,
-                        title={"text": "Max Potential Loss (95%)", "font": {"size": 22}},
-                        number={"prefix": "$", "valueformat": ",.0f"},
-                        gauge={
-                            "axis": {"range": [0, gauge_max]},
-                            "bar": {"color": "darkred"},
-                            "steps": [
-                                {"range": [0, gauge_max * 0.4], "color": "#d6f5d6"},
-                                {"range": [gauge_max * 0.4, gauge_max * 0.7], "color": "#fff7cc"},
-                                {"range": [gauge_max * 0.7, gauge_max], "color": "#ffd6d6"},
-                            ],
-                        },
-                    )
-                )
-                gauge_fig.update_layout(height=360, margin=dict(l=10, r=10, t=50, b=10))
-
-                allocation_fig = go.Figure(
-                    data=[
-                        go.Pie(
-                            labels=asset_labels,
-                            values=normalized_weights,
-                            hole=0.55,
-                            textinfo="label+percent",
-                        )
-                    ]
-                )
-                allocation_fig.update_layout(
-                    title="Portfolio Allocation", height=360, margin=dict(l=10, r=10, t=50, b=10)
-                )
-
-                dashboard_col1, dashboard_col2 = st.columns(2)
-                dashboard_col1.plotly_chart(gauge_fig, use_container_width=True)
-                dashboard_col2.plotly_chart(allocation_fig, use_container_width=True)
-
-                risk_bar_fig = go.Figure(
-                    data=[
-                        go.Bar(
-                            x=["Expected", "Median", "VaR 95%", "CVaR 95%"],
-                            y=[
-                                float(data["expected_final_value"]),
-                                float(data["median_final_value"]),
-                                float(data["var_95_threshold"]),
-                                float(data["cvar_95_expected_shortfall"]),
-                            ],
-                            marker_color=["#4e79a7", "#59a14f", "#f28e2b", "#e15759"],
-                        )
-                    ]
-                )
-                risk_bar_fig.update_layout(
-                    title="Portfolio Value Comparison",
-                    yaxis_title="Value ($)",
-                    height=360,
-                    margin=dict(l=10, r=10, t=50, b=10),
-                )
-                st.plotly_chart(risk_bar_fig, use_container_width=True)
-
-            with tab_raw:
-                st.json(data)
-
+            st.session_state["last_simulation_data"] = data
+            st.session_state["last_simulation_asset_labels"] = asset_labels
+            st.session_state["last_simulation_weights"] = normalized_weights
         except RuntimeError as exc:
             st.error(str(exc))
         except requests.exceptions.Timeout:
@@ -323,3 +556,24 @@ if st.button("Run Risk Simulation", type="primary"):
             st.error(f"Network error while calling API: {exc}")
         except Exception as exc:
             st.error(f"Failed to fetch data: {exc}")
+
+last_data = st.session_state.get("last_simulation_data")
+if isinstance(last_data, dict):
+    last_asset_labels = st.session_state.get("last_simulation_asset_labels", asset_labels)
+    if not isinstance(last_asset_labels, list) or len(last_asset_labels) != 3:
+        last_asset_labels = asset_labels
+
+    last_weights = st.session_state.get("last_simulation_weights", normalized_weights)
+    if (
+        not isinstance(last_weights, list)
+        or len(last_weights) != 3
+        or float(np.sum(last_weights)) <= 0
+    ):
+        last_weights = normalized_weights
+
+    render_simulation_results(
+        data=last_data,
+        asset_labels=last_asset_labels,
+        normalized_weights=last_weights,
+        show_success=run_clicked,
+    )
