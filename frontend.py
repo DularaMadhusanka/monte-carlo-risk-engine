@@ -512,7 +512,7 @@ def render_simulation_results(
         st.json(data)
 
 
-st.title("📈 Portfolio Risk Engine (Monte Carlo)")
+st.title("Portfolio Risk Engine (Monte Carlo)")
 st.write("Powered by FastAPI & Geometric Brownian Motion")
 
 st.sidebar.header("Simulation Parameters")
@@ -586,7 +586,7 @@ if "chart_selected_period" not in st.session_state:
 if "chart_selected_mode" not in st.session_state:
     st.session_state["chart_selected_mode"] = "Both"
 
-tab1, tab2 = st.tabs(["📊 Main Dashboard", "⚖️ Strategy Comparison (Ex-Ante)"])
+tab1, tab2 = st.tabs(["Main Dashboard", "Strategy Comparison (Ex-Ante)"])
 
 with tab1:
     action_col1, action_col2, action_col3 = st.columns([2, 1, 1])
@@ -753,6 +753,8 @@ with tab2:
         if isinstance(strategy_a, dict) and isinstance(strategy_b, dict):
             var_a = float(strategy_a.get("max_potential_loss_95", 0.0))
             var_b = float(strategy_b.get("max_potential_loss_95", 0.0))
+            expected_a = float(strategy_a.get("expected_final_value", 0.0))
+            expected_b = float(strategy_b.get("expected_final_value", 0.0))
             var_savings = var_a - var_b
 
             st.subheader("Comparison Results")
@@ -774,14 +776,39 @@ with tab2:
                     delta_color="normal" if var_savings > 0 else "inverse",
                 )
 
+            comparison_fig = go.Figure(
+                data=[
+                    go.Bar(
+                        name="Strategy A",
+                        x=["Expected Value", "95% VaR Loss"],
+                        y=[expected_a, var_a],
+                        marker_color="#4e79a7",
+                    ),
+                    go.Bar(
+                        name="Strategy B",
+                        x=["Expected Value", "95% VaR Loss"],
+                        y=[expected_b, var_b],
+                        marker_color="#59a14f",
+                    ),
+                ]
+            )
+            comparison_fig.update_layout(
+                barmode="group",
+                title="Strategy A vs B: Expected Value and VaR",
+                yaxis_title="USD ($)",
+                height=360,
+                margin=dict(l=10, r=10, t=50, b=10),
+            )
+            st.plotly_chart(comparison_fig, use_container_width=True)
+
             if var_savings > 0:
                 st.success(
-                    "✅ Strategy B is mathematically safer. By reallocating these weights, "
+                    "Strategy B is mathematically safer. By reallocating these weights, "
                     "you reduce tail-risk exposure while maintaining market presence."
                 )
             elif var_savings < 0:
                 st.warning(
-                    "⚠️ Strategy A is currently safer on 95% VaR. Consider reducing risk "
+                    "Strategy A is currently safer on 95% VaR. Consider reducing risk "
                     "in Strategy B allocations."
                 )
             else:
