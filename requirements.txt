@@ -3,7 +3,7 @@ uvicorn==0.28.0
 pydantic==2.6.3
 numpy==1.26.4
 pandas==2.2.1
-yfinance==0.2.37
+yfinance>=0.2.54
 streamlit==1.32.0
 requests==2.31.0
 plotly==5.18.0

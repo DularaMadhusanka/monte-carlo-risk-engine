@@ -9,6 +9,8 @@ import requests
 import streamlit as st
 import yfinance as yf
 from plotly.subplots import make_subplots
+from requests.adapters import HTTPAdapter
+from urllib3.util.retry import Retry
 
 API_URL = os.getenv("API_URL", "https://monte-carlo-risk-engine.onrender.com")
 REQUEST_TIMEOUT_SECONDS = 100
@@ -80,9 +82,36 @@ def call_simulation(api_url: str, payload: Dict[str, Any]) -> Dict[str, Any]:
     raise RuntimeError(f"API Error ({response.status_code}): {detail}")
 
 
+@st.cache_resource
+def get_market_data_session() -> requests.Session:
+    session = requests.Session()
+    session.headers.update(
+        {
+            "User-Agent": (
+                "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 "
+                "(KHTML, like Gecko) Chrome/123.0.0.0 Safari/537.36"
+            )
+        }
+    )
+    retry_policy = Retry(
+        total=4,
+        connect=4,
+        read=4,
+        backoff_factor=0.6,
+        status_forcelist=[429, 500, 502, 503, 504],
+        allowed_methods=["GET"],
+        raise_on_status=False,
+    )
+    adapter = HTTPAdapter(max_retries=retry_policy)
+    session.mount("https://", adapter)
+    session.mount("http://", adapter)
+    return session
+
+
 def get_historical_ohlcv(ticker: str, period: str = "6mo", interval: str = "1d") -> pd.DataFrame:
     clean_ticker = str(ticker).strip().upper()
     required_cols = ["Open", "High", "Low", "Close", "Volume"]
+    market_data_session = get_market_data_session()
 
     def _normalize_ohlcv(raw_df: pd.DataFrame) -> pd.DataFrame:
         if raw_df is None or raw_df.empty:
@@ -108,7 +137,7 @@ def get_historical_ohlcv(ticker: str, period: str = "6mo", interval: str = "1d")
         return ohlcv
 
     methods = [
-        lambda: yf.Ticker(clean_ticker).history(
+        lambda: yf.Ticker(clean_ticker, session=market_data_session).history(
             period=period,
             interval=interval,
             auto_adjust=False,
@@ -122,6 +151,7 @@ def get_historical_ohlcv(ticker: str, period: str = "6mo", interval: str = "1d")
             progress=False,
             group_by="column",
             threads=False,
+            session=market_data_session,
         ),
     ]
 
