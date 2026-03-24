@@ -80,24 +80,61 @@ def call_simulation(api_url: str, payload: Dict[str, Any]) -> Dict[str, Any]:
     raise RuntimeError(f"API Error ({response.status_code}): {detail}")
 
 
-@st.cache_data(ttl=900)
 def get_historical_ohlcv(ticker: str, period: str = "6mo", interval: str = "1d") -> pd.DataFrame:
-    history = yf.Ticker(ticker).history(period=period, interval=interval, auto_adjust=False)
-    if history.empty:
-        return pd.DataFrame()
-
+    clean_ticker = str(ticker).strip().upper()
     required_cols = ["Open", "High", "Low", "Close", "Volume"]
-    available_cols = [col for col in required_cols if col in history.columns]
-    if len(available_cols) < len(required_cols):
-        return pd.DataFrame()
 
-    ohlcv = history[required_cols].dropna().copy()
-    if ohlcv.empty:
-        return pd.DataFrame()
+    def _normalize_ohlcv(raw_df: pd.DataFrame) -> pd.DataFrame:
+        if raw_df is None or raw_df.empty:
+            return pd.DataFrame()
 
-    if getattr(ohlcv.index, "tz", None) is not None:
-        ohlcv.index = ohlcv.index.tz_localize(None)
-    return ohlcv
+        history = raw_df.copy()
+        if isinstance(history.columns, pd.MultiIndex):
+            if clean_ticker in history.columns.get_level_values(0):
+                history = history[clean_ticker]
+            elif len(history.columns.levels) > 1 and clean_ticker in history.columns.get_level_values(-1):
+                history = history.xs(clean_ticker, axis=1, level=-1)
+
+        available_cols = [col for col in required_cols if col in history.columns]
+        if len(available_cols) < len(required_cols):
+            return pd.DataFrame()
+
+        ohlcv = history[required_cols].dropna().copy()
+        if ohlcv.empty:
+            return pd.DataFrame()
+
+        if getattr(ohlcv.index, "tz", None) is not None:
+            ohlcv.index = ohlcv.index.tz_localize(None)
+        return ohlcv
+
+    methods = [
+        lambda: yf.Ticker(clean_ticker).history(
+            period=period,
+            interval=interval,
+            auto_adjust=False,
+            actions=False,
+        ),
+        lambda: yf.download(
+            clean_ticker,
+            period=period,
+            interval=interval,
+            auto_adjust=False,
+            progress=False,
+            group_by="column",
+            threads=False,
+        ),
+    ]
+
+    for fetch in methods:
+        for _ in range(2):
+            try:
+                normalized = _normalize_ohlcv(fetch())
+                if not normalized.empty:
+                    return normalized
+            except Exception:
+                continue
+
+    return pd.DataFrame()
 
 
 def build_candlestick_volume_figure(ohlcv: pd.DataFrame, ticker: str) -> go.Figure:
@@ -150,7 +187,6 @@ def build_candlestick_volume_figure(ohlcv: pd.DataFrame, ticker: str) -> go.Figu
     return fig
 
 
-@st.cache_data(ttl=900)
 def get_synthetic_portfolio_ohlcv(
     tickers: list[str],
     weights: list[float],
