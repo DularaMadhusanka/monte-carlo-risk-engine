@@ -586,69 +586,203 @@ if "chart_selected_period" not in st.session_state:
 if "chart_selected_mode" not in st.session_state:
     st.session_state["chart_selected_mode"] = "Both"
 
-action_col1, action_col2, action_col3 = st.columns([2, 1, 1])
-run_clicked = action_col1.button("Run Risk Simulation", type="primary")
-clear_clicked = action_col2.button("Clear Saved Simulation")
-clear_all_clicked = action_col3.button("Clear All Dashboard State")
+tab1, tab2 = st.tabs(["📊 Main Dashboard", "⚖️ Strategy Comparison (Ex-Ante)"])
 
-if clear_clicked:
-    st.session_state.pop("last_simulation_data", None)
-    st.session_state.pop("last_simulation_asset_labels", None)
-    st.session_state.pop("last_simulation_weights", None)
-    st.info("Saved simulation has been cleared.")
+with tab1:
+    action_col1, action_col2, action_col3 = st.columns([2, 1, 1])
+    run_clicked = action_col1.button("Run Risk Simulation", type="primary")
+    clear_clicked = action_col2.button("Clear Saved Simulation")
+    clear_all_clicked = action_col3.button("Clear All Dashboard State")
 
-if clear_all_clicked:
-    st.session_state.pop("last_simulation_data", None)
-    st.session_state.pop("last_simulation_asset_labels", None)
-    st.session_state.pop("last_simulation_weights", None)
-    st.session_state["chart_selected_ticker"] = asset_labels[0]
-    st.session_state["chart_selected_period"] = "6mo"
-    st.session_state["chart_selected_mode"] = "Both"
-    st.info("Dashboard state reset to defaults.")
+    if clear_clicked:
+        st.session_state.pop("last_simulation_data", None)
+        st.session_state.pop("last_simulation_asset_labels", None)
+        st.session_state.pop("last_simulation_weights", None)
+        st.info("Saved simulation has been cleared.")
 
-if run_clicked:
-    payload = {
-        "initial_value": float(initial_value),
-        "years": float(years),
-        "sims": int(sims),
-        "weights": normalized_weights,
-    }
+    if clear_all_clicked:
+        st.session_state.pop("last_simulation_data", None)
+        st.session_state.pop("last_simulation_asset_labels", None)
+        st.session_state.pop("last_simulation_weights", None)
+        st.session_state.pop("strategy_duel_results", None)
+        st.session_state["chart_selected_ticker"] = asset_labels[0]
+        st.session_state["chart_selected_period"] = "6mo"
+        st.session_state["chart_selected_mode"] = "Both"
+        st.info("Dashboard state reset to defaults.")
 
-    with st.spinner("Calculating parallel universes..."):
-        try:
-            data = call_simulation(api_url, payload)
-            st.session_state["last_simulation_data"] = data
-            st.session_state["last_simulation_asset_labels"] = asset_labels
-            st.session_state["last_simulation_weights"] = normalized_weights
-        except RuntimeError as exc:
-            st.error(str(exc))
-        except requests.exceptions.Timeout:
-            st.error(
-                "The request timed out. The backend may be waking from cold start; "
-                "please retry in a few seconds."
-            )
-        except requests.exceptions.RequestException as exc:
-            st.error(f"Network error while calling API: {exc}")
-        except Exception as exc:
-            st.error(f"Failed to fetch data: {exc}")
+    if run_clicked:
+        payload = {
+            "initial_value": float(initial_value),
+            "years": float(years),
+            "sims": int(sims),
+            "weights": normalized_weights,
+        }
 
-last_data = st.session_state.get("last_simulation_data")
-if isinstance(last_data, dict):
-    last_asset_labels = st.session_state.get("last_simulation_asset_labels", asset_labels)
-    if not isinstance(last_asset_labels, list) or len(last_asset_labels) != 3:
-        last_asset_labels = asset_labels
+        with st.spinner("Calculating parallel universes..."):
+            try:
+                data = call_simulation(api_url, payload)
+                st.session_state["last_simulation_data"] = data
+                st.session_state["last_simulation_asset_labels"] = asset_labels
+                st.session_state["last_simulation_weights"] = normalized_weights
+            except RuntimeError as exc:
+                st.error(str(exc))
+            except requests.exceptions.Timeout:
+                st.error(
+                    "The request timed out. The backend may be waking from cold start; "
+                    "please retry in a few seconds."
+                )
+            except requests.exceptions.RequestException as exc:
+                st.error(f"Network error while calling API: {exc}")
+            except Exception as exc:
+                st.error(f"Failed to fetch data: {exc}")
 
-    last_weights = st.session_state.get("last_simulation_weights", normalized_weights)
-    if (
-        not isinstance(last_weights, list)
-        or len(last_weights) != 3
-        or float(np.sum(last_weights)) <= 0
-    ):
-        last_weights = normalized_weights
+    last_data = st.session_state.get("last_simulation_data")
+    if isinstance(last_data, dict):
+        last_asset_labels = st.session_state.get("last_simulation_asset_labels", asset_labels)
+        if not isinstance(last_asset_labels, list) or len(last_asset_labels) != 3:
+            last_asset_labels = asset_labels
 
-    render_simulation_results(
-        data=last_data,
-        asset_labels=last_asset_labels,
-        normalized_weights=last_weights,
-        show_success=run_clicked,
+        last_weights = st.session_state.get("last_simulation_weights", normalized_weights)
+        if (
+            not isinstance(last_weights, list)
+            or len(last_weights) != 3
+            or float(np.sum(last_weights)) <= 0
+        ):
+            last_weights = normalized_weights
+
+        render_simulation_results(
+            data=last_data,
+            asset_labels=last_asset_labels,
+            normalized_weights=last_weights,
+            show_success=run_clicked,
+        )
+
+with tab2:
+    st.header("Position Sizing Optimization")
+    st.markdown(
+        "Compare two different asset weight allocations to minimize your Value at Risk (VaR) "
+        "before committing capital."
     )
+
+    col_a, col_b = st.columns(2)
+
+    with col_a:
+        st.subheader("Strategy A")
+        a_w1 = st.slider(f"{asset_labels[0]} %", 0, 100, 33, key="duel_a_w1")
+        a_w2 = st.slider(f"{asset_labels[1]} %", 0, 100, 33, key="duel_a_w2")
+        a_w3 = st.slider(f"{asset_labels[2]} %", 0, 100, 34, key="duel_a_w3")
+
+    with col_b:
+        st.subheader("Strategy B")
+        b_w1 = st.slider(f"{asset_labels[0]} %", 0, 100, 50, key="duel_b_w1")
+        b_w2 = st.slider(f"{asset_labels[1]} %", 0, 100, 40, key="duel_b_w2")
+        b_w3 = st.slider(f"{asset_labels[2]} %", 0, 100, 10, key="duel_b_w3")
+
+    a_total = a_w1 + a_w2 + a_w3
+    b_total = b_w1 + b_w2 + b_w3
+
+    a_weights = [a_w1 / a_total, a_w2 / a_total, a_w3 / a_total] if a_total > 0 else [0.0, 0.0, 0.0]
+    b_weights = [b_w1 / b_total, b_w2 / b_total, b_w3 / b_total] if b_total > 0 else [0.0, 0.0, 0.0]
+
+    norm_col_a, norm_col_b = st.columns(2)
+    norm_col_a.caption(
+        "Strategy A normalized: "
+        f"{asset_labels[0]} {a_weights[0]:.1%}, "
+        f"{asset_labels[1]} {a_weights[1]:.1%}, "
+        f"{asset_labels[2]} {a_weights[2]:.1%}"
+    )
+    norm_col_b.caption(
+        "Strategy B normalized: "
+        f"{asset_labels[0]} {b_weights[0]:.1%}, "
+        f"{asset_labels[1]} {b_weights[1]:.1%}, "
+        f"{asset_labels[2]} {b_weights[2]:.1%}"
+    )
+
+    st.divider()
+
+    duel_clicked = st.button("Run Strategy Duel", type="primary", key="run_strategy_duel")
+    if duel_clicked:
+        if a_total == 0 or b_total == 0:
+            st.error("Both strategies must allocate above 0% total weight.")
+        else:
+            st.info(
+                "Simulating both strategies... This sends 2 requests to the backend. "
+                "For free-tier safety, keep simulations under 2,000 when possible."
+            )
+
+            payload_a = {
+                "initial_value": float(initial_value),
+                "years": float(years),
+                "sims": int(sims),
+                "weights": a_weights,
+            }
+            payload_b = {
+                "initial_value": float(initial_value),
+                "years": float(years),
+                "sims": int(sims),
+                "weights": b_weights,
+            }
+
+            with st.spinner("Running strategy comparison..."):
+                try:
+                    result_a = call_simulation(api_url, payload_a)
+                    result_b = call_simulation(api_url, payload_b)
+                    st.session_state["strategy_duel_results"] = {
+                        "strategy_a": result_a,
+                        "strategy_b": result_b,
+                        "weights_a": a_weights,
+                        "weights_b": b_weights,
+                    }
+                except RuntimeError as exc:
+                    st.error(str(exc))
+                except requests.exceptions.Timeout:
+                    st.error(
+                        "The strategy duel timed out. Backend may be waking from cold start; "
+                        "retry in a few seconds."
+                    )
+                except requests.exceptions.RequestException as exc:
+                    st.error(f"Network error while running strategy duel: {exc}")
+                except Exception as exc:
+                    st.error(f"Strategy duel failed: {exc}")
+
+    duel_results = st.session_state.get("strategy_duel_results")
+    if isinstance(duel_results, dict):
+        strategy_a = duel_results.get("strategy_a", {})
+        strategy_b = duel_results.get("strategy_b", {})
+
+        if isinstance(strategy_a, dict) and isinstance(strategy_b, dict):
+            var_a = float(strategy_a.get("max_potential_loss_95", 0.0))
+            var_b = float(strategy_b.get("max_potential_loss_95", 0.0))
+            var_savings = var_a - var_b
+
+            st.subheader("Comparison Results")
+            res_col1, res_col2 = st.columns(2)
+
+            with res_col1:
+                st.metric(label="Strategy A (95% VaR)", value=f"-${var_a:,.2f}")
+
+            with res_col2:
+                delta_text = (
+                    f"${abs(var_savings):,.2f} less risk!"
+                    if var_savings > 0
+                    else f"${abs(var_savings):,.2f} more risk"
+                )
+                st.metric(
+                    label="Strategy B (95% VaR)",
+                    value=f"-${var_b:,.2f}",
+                    delta=delta_text,
+                    delta_color="normal" if var_savings > 0 else "inverse",
+                )
+
+            if var_savings > 0:
+                st.success(
+                    "✅ Strategy B is mathematically safer. By reallocating these weights, "
+                    "you reduce tail-risk exposure while maintaining market presence."
+                )
+            elif var_savings < 0:
+                st.warning(
+                    "⚠️ Strategy A is currently safer on 95% VaR. Consider reducing risk "
+                    "in Strategy B allocations."
+                )
+            else:
+                st.info("Both strategies have identical 95% VaR under current simulation settings.")
