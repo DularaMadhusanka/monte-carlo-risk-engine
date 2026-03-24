@@ -1,5 +1,6 @@
 import os
 import time
+from datetime import datetime, timedelta, timezone
 from typing import Any, Dict, Optional
 
 import numpy as np
@@ -7,13 +8,11 @@ import pandas as pd
 import plotly.graph_objects as go
 import requests
 import streamlit as st
-import yfinance as yf
 from plotly.subplots import make_subplots
-from requests.adapters import HTTPAdapter
-from urllib3.util.retry import Retry
 
 API_URL = os.getenv("API_URL", "https://monte-carlo-risk-engine.onrender.com")
 REQUEST_TIMEOUT_SECONDS = 100
+TIINGO_API_URL = "https://api.tiingo.com/tiingo/daily"
 
 st.set_page_config(page_title="Monte Carlo Risk Engine", layout="wide")
 
@@ -82,89 +81,86 @@ def call_simulation(api_url: str, payload: Dict[str, Any]) -> Dict[str, Any]:
     raise RuntimeError(f"API Error ({response.status_code}): {detail}")
 
 
-@st.cache_resource
-def get_market_data_session() -> requests.Session:
-    session = requests.Session()
-    session.headers.update(
-        {
-            "User-Agent": (
-                "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 "
-                "(KHTML, like Gecko) Chrome/123.0.0.0 Safari/537.36"
-            )
-        }
+def get_tiingo_api_key() -> Optional[str]:
+    key_from_env = os.getenv("TIINGO_API_KEY")
+    if key_from_env:
+        return key_from_env
+
+    try:
+        key_from_secrets = st.secrets.get("TIINGO_API_KEY")
+        if key_from_secrets:
+            return str(key_from_secrets)
+    except Exception:
+        pass
+
+    return None
+
+
+def period_to_date_range(period: str) -> tuple[str, str]:
+    lookback_days = {
+        "1mo": 31,
+        "3mo": 93,
+        "6mo": 186,
+        "1y": 366,
+        "2y": 731,
+        "5y": 1827,
+    }
+    days = lookback_days.get(period, 186)
+    end_dt = datetime.now(timezone.utc).date()
+    start_dt = end_dt - timedelta(days=days)
+    return start_dt.isoformat(), end_dt.isoformat()
+
+
+def get_historical_ohlcv_tiingo(ticker: str, period: str = "6mo") -> pd.DataFrame:
+    api_key = get_tiingo_api_key()
+    if not api_key:
+        return pd.DataFrame()
+
+    clean_ticker = str(ticker).strip().upper()
+    start_date, end_date = period_to_date_range(period)
+    response = requests.get(
+        f"{TIINGO_API_URL}/{clean_ticker}/prices",
+        params={
+            "startDate": start_date,
+            "endDate": end_date,
+            "resampleFreq": "daily",
+            "columns": "open,high,low,close,volume,date",
+            "token": api_key,
+        },
+        timeout=REQUEST_TIMEOUT_SECONDS,
     )
-    retry_policy = Retry(
-        total=4,
-        connect=4,
-        read=4,
-        backoff_factor=0.6,
-        status_forcelist=[429, 500, 502, 503, 504],
-        allowed_methods=["GET"],
-        raise_on_status=False,
-    )
-    adapter = HTTPAdapter(max_retries=retry_policy)
-    session.mount("https://", adapter)
-    session.mount("http://", adapter)
-    return session
+
+    if response.status_code != 200:
+        return pd.DataFrame()
+
+    payload = response.json()
+    if not isinstance(payload, list) or len(payload) == 0:
+        return pd.DataFrame()
+
+    df = pd.DataFrame(payload)
+    if df.empty:
+        return pd.DataFrame()
+
+    required = ["open", "high", "low", "close", "volume", "date"]
+    if any(col not in df.columns for col in required):
+        return pd.DataFrame()
+
+    ohlcv = df[required].copy()
+    ohlcv.columns = ["Open", "High", "Low", "Close", "Volume", "Date"]
+    ohlcv["Date"] = pd.to_datetime(ohlcv["Date"], errors="coerce")
+    ohlcv = ohlcv.dropna(subset=["Date", "Open", "High", "Low", "Close", "Volume"])
+    if ohlcv.empty:
+        return pd.DataFrame()
+
+    ohlcv = ohlcv.set_index("Date").sort_index()
+    if getattr(ohlcv.index, "tz", None) is not None:
+        ohlcv.index = ohlcv.index.tz_localize(None)
+    return ohlcv[["Open", "High", "Low", "Close", "Volume"]]
 
 
 def get_historical_ohlcv(ticker: str, period: str = "6mo", interval: str = "1d") -> pd.DataFrame:
-    clean_ticker = str(ticker).strip().upper()
-    required_cols = ["Open", "High", "Low", "Close", "Volume"]
-    market_data_session = get_market_data_session()
-
-    def _normalize_ohlcv(raw_df: pd.DataFrame) -> pd.DataFrame:
-        if raw_df is None or raw_df.empty:
-            return pd.DataFrame()
-
-        history = raw_df.copy()
-        if isinstance(history.columns, pd.MultiIndex):
-            if clean_ticker in history.columns.get_level_values(0):
-                history = history[clean_ticker]
-            elif len(history.columns.levels) > 1 and clean_ticker in history.columns.get_level_values(-1):
-                history = history.xs(clean_ticker, axis=1, level=-1)
-
-        available_cols = [col for col in required_cols if col in history.columns]
-        if len(available_cols) < len(required_cols):
-            return pd.DataFrame()
-
-        ohlcv = history[required_cols].dropna().copy()
-        if ohlcv.empty:
-            return pd.DataFrame()
-
-        if getattr(ohlcv.index, "tz", None) is not None:
-            ohlcv.index = ohlcv.index.tz_localize(None)
-        return ohlcv
-
-    methods = [
-        lambda: yf.Ticker(clean_ticker, session=market_data_session).history(
-            period=period,
-            interval=interval,
-            auto_adjust=False,
-            actions=False,
-        ),
-        lambda: yf.download(
-            clean_ticker,
-            period=period,
-            interval=interval,
-            auto_adjust=False,
-            progress=False,
-            group_by="column",
-            threads=False,
-            session=market_data_session,
-        ),
-    ]
-
-    for fetch in methods:
-        for _ in range(2):
-            try:
-                normalized = _normalize_ohlcv(fetch())
-                if not normalized.empty:
-                    return normalized
-            except Exception:
-                continue
-
-    return pd.DataFrame()
+    del interval
+    return get_historical_ohlcv_tiingo(ticker=ticker, period=period)
 
 
 def build_candlestick_volume_figure(ohlcv: pd.DataFrame, ticker: str) -> go.Figure:
@@ -321,10 +317,16 @@ def render_simulation_results(
             ohlcv = get_historical_ohlcv(selected_ticker, period=selected_period)
 
         if ohlcv.empty:
-            st.warning(
-                f"No OHLCV data available for {selected_ticker} in {selected_period}. "
-                "Try a different period or asset."
-            )
+            if not get_tiingo_api_key():
+                st.error(
+                    "Tiingo API key is missing. Add `TIINGO_API_KEY` to Streamlit secrets "
+                    "or environment variables."
+                )
+            else:
+                st.warning(
+                    f"Could not fetch Tiingo OHLCV data for {selected_ticker} in {selected_period}. "
+                    "Verify API key validity and ticker support."
+                )
         else:
             candle_fig = build_candlestick_volume_figure(ohlcv, selected_ticker)
             st.plotly_chart(candle_fig, use_container_width=True)
@@ -338,7 +340,10 @@ def render_simulation_results(
             )
 
         if portfolio_ohlcv.empty:
-            st.warning("Unable to build synthetic portfolio OHLCV for the selected period.")
+            st.warning(
+                "Unable to build synthetic portfolio OHLCV from Tiingo data. "
+                "Check API key and ticker data availability."
+            )
         else:
             portfolio_fig = build_candlestick_volume_figure(
                 portfolio_ohlcv,
@@ -512,6 +517,10 @@ st.write("Powered by FastAPI & Geometric Brownian Motion")
 
 st.sidebar.header("Simulation Parameters")
 api_url = st.sidebar.text_input("FastAPI URL", value=API_URL)
+if get_tiingo_api_key():
+    st.sidebar.success("Market data source: Tiingo API key detected")
+else:
+    st.sidebar.warning("Market data source: Tiingo key missing (set TIINGO_API_KEY)")
 initial_value = st.sidebar.number_input(
     "Initial Investment ($)",
     min_value=1000,
