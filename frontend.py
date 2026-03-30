@@ -81,6 +81,25 @@ def call_simulation(api_url: str, payload: Dict[str, Any]) -> Dict[str, Any]:
     raise RuntimeError(f"API Error ({response.status_code}): {detail}")
 
 
+def call_backtest(api_url: str, payload: Dict[str, Any]) -> Dict[str, Any]:
+    response = requests.post(
+        f"{api_url}/backtest",
+        json=payload,
+        timeout=REQUEST_TIMEOUT_SECONDS,
+    )
+
+    if response.status_code == 200:
+        return response.json()
+
+    detail: Optional[str] = None
+    try:
+        detail = response.json().get("detail")
+    except Exception:
+        detail = response.text
+
+    raise RuntimeError(f"API Error ({response.status_code}): {detail}")
+
+
 def get_tiingo_api_key() -> Optional[str]:
     key_from_env = os.getenv("TIINGO_API_KEY")
     if key_from_env:
@@ -586,7 +605,7 @@ if "chart_selected_period" not in st.session_state:
 if "chart_selected_mode" not in st.session_state:
     st.session_state["chart_selected_mode"] = "Both"
 
-tab1, tab2 = st.tabs(["Main Dashboard", "Strategy Comparison (Ex-Ante)"])
+tab1, tab2, tab3 = st.tabs(["Main Dashboard", "Strategy Comparison (Ex-Ante)", "Backtesting (Kupiec POF)"])
 
 with tab1:
     action_col1, action_col2, action_col3 = st.columns([2, 1, 1])
@@ -813,3 +832,157 @@ with tab2:
                 )
             else:
                 st.info("Both strategies have identical 95% VaR under current simulation settings.")
+
+
+with tab3:
+    st.header("Backtesting (Rolling VaR + Kupiec POF)")
+    st.caption("Walk forward one trading day at a time. Exceptions are days where actual return is below the predicted VaR line.")
+
+    bt_mode = st.selectbox(
+        "Backtest target",
+        options=["Portfolio (current weights)", "Single ticker"],
+        index=0,
+    )
+
+    if bt_mode == "Single ticker":
+        bt_ticker = st.selectbox("Ticker", options=asset_labels, index=0)
+        bt_tickers = [bt_ticker]
+        bt_weights = [1.0]
+    else:
+        bt_tickers = asset_labels
+        bt_weights = normalized_weights
+
+    backtest_days = st.slider(
+        "Backtest horizon (trading days)",
+        min_value=63,
+        max_value=252,
+        value=252,
+        step=63,
+    )
+    window_days = st.slider(
+        "Rolling window size (trading days)",
+        min_value=126,
+        max_value=252,
+        value=252,
+        step=126,
+    )
+    bt_sims = st.slider(
+        "Monte Carlo sims per day",
+        min_value=200,
+        max_value=2000,
+        value=int(min(sims, 1000)),
+        step=100,
+    )
+    seed = st.number_input("Seed", min_value=0, max_value=10_000_000, value=42, step=1)
+    confidence = 0.95
+
+    run_bt_clicked = st.button("Run Rolling Backtest", type="primary", key="run_rolling_backtest")
+    if run_bt_clicked:
+        payload = {
+            "initial_value": float(initial_value),
+            "backtest_days": int(backtest_days),
+            "window_days": int(window_days),
+            "sims": int(bt_sims),
+            "confidence": float(confidence),
+            "seed": int(seed),
+            "tickers": bt_tickers,
+            "weights": bt_weights,
+        }
+
+        with st.spinner("Running rolling VaR backtest..."):
+            try:
+                bt_data = call_backtest(api_url, payload)
+                st.session_state["last_backtest"] = bt_data
+                st.success("Backtest completed.")
+            except RuntimeError as exc:
+                st.error(str(exc))
+            except requests.exceptions.Timeout:
+                st.error(
+                    "The backtest request timed out. Try reducing `Monte Carlo sims per day` or `Backtest horizon`."
+                )
+            except requests.exceptions.RequestException as exc:
+                st.error(f"Network error while calling backtest: {exc}")
+            except Exception as exc:
+                st.error(f"Backtest failed: {exc}")
+
+    bt_data = st.session_state.get("last_backtest")
+    if isinstance(bt_data, dict) and "dates" in bt_data:
+        kupiec = bt_data.get("kupiec_pof", {})
+
+        dates = bt_data.get("dates", [])
+        actual_returns = bt_data.get("actual_returns", [])
+        var_returns = bt_data.get("var_returns", [])
+        exceptions = bt_data.get("exceptions", [])
+
+        exc_x = [dates[i] if exceptions[i] else None for i in range(len(dates))]
+        exc_y = [actual_returns[i] if exceptions[i] else None for i in range(len(dates))]
+
+        st.subheader("Kupiec POF Summary")
+        k1, k2, k3, k4 = st.columns(4)
+        with k1:
+            st.metric(label="Exceptions (x)", value=int(kupiec.get("x", 0)))
+        with k2:
+            st.metric(label="Total days (N)", value=int(kupiec.get("N", 0)))
+        with k3:
+            st.metric(label="Expected exceptions", value=f"{float(kupiec.get('expected_exceptions', 0.0)):.1f}")
+        with k4:
+            st.metric(label="Kupiec p-value", value=f"{float(kupiec.get('p_value', 0.0)):.4f}")
+
+        if bool(kupiec.get("pass_", False)):
+            st.success("Model PASSES Kupiec POF at the 95% test significance level.")
+        else:
+            st.error("Model FAILS Kupiec POF (VaR is not calibrated).")
+
+        st.subheader("Return Series + Predicted VaR")
+        fig = go.Figure()
+        fig.add_trace(
+            go.Scatter(
+                x=dates,
+                y=var_returns,
+                mode="lines",
+                name="Predicted 95% VaR (return)",
+                line=dict(color="#f28e2b", width=2),
+            )
+        )
+        fig.add_trace(
+            go.Scatter(
+                x=dates,
+                y=var_returns,
+                mode="lines",
+                fill="tozeroy",
+                name="VaR zone",
+                line=dict(color="rgba(0,0,0,0)"),
+                opacity=0.25,
+                showlegend=True,
+            )
+        )
+        fig.add_trace(
+            go.Scatter(
+                x=dates,
+                y=actual_returns,
+                mode="lines",
+                name="Actual portfolio return",
+                line=dict(color="#4e79a7", width=2),
+            )
+        )
+        fig.add_trace(
+            go.Scatter(
+                x=exc_x,
+                y=exc_y,
+                mode="markers",
+                name="Exceptions",
+                marker=dict(color="red", size=8),
+            )
+        )
+
+        fig.update_layout(
+            template="plotly_dark",
+            height=520,
+            margin=dict(l=10, r=10, t=50, b=10),
+            legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="left", x=0),
+            xaxis_title="Date",
+            yaxis_title="Daily return",
+        )
+        st.plotly_chart(fig, use_container_width=True)
+
+        st.caption("Red markers indicate breach days where actual return <= predicted VaR return.")
