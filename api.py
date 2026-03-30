@@ -3,6 +3,7 @@ from functools import lru_cache
 from typing import List, Optional
 
 import numpy as np
+import pandas as pd
 import yfinance as yf
 from scipy.stats import chi2
 from fastapi import FastAPI, HTTPException
@@ -205,21 +206,77 @@ def _validate_and_normalize_weights(weights: Optional[List[float]], n_assets: in
 
 
 def _fetch_close_prices(tickers: List[str], period: str = "3y") -> tuple[list[str], np.ndarray]:
-    close_data = yf.download(tickers, period=period, interval="1d", progress=False)["Close"]
+    # Normalize tickers to avoid subtle yfinance issues (whitespace/case).
+    clean_tickers = [str(t).strip().upper() for t in tickers if str(t).strip()]
+    if not clean_tickers:
+        raise HTTPException(status_code=400, detail="No valid tickers provided for backtest.")
 
-    # yfinance returns a Series for a single ticker and a DataFrame for multiple tickers.
-    if hasattr(close_data, "columns"):
-        close_df = close_data
-    else:
-        close_df = close_data.to_frame(name=tickers[0])
+    tried_periods: list[str] = []
+    last_reason: str | None = None
 
-    close_df = close_df.dropna(how="any")
-    if close_df.empty:
-        raise HTTPException(status_code=500, detail="No price history returned for backtest.")
+    # Retry with longer lookback if the first attempt returns nothing/NaNs.
+    for p in [period, "5y", "10y"]:
+        tried_periods.append(p)
+        try:
+            close_data = yf.download(
+                clean_tickers,
+                period=p,
+                interval="1d",
+                progress=False,
+                threads=False,
+                auto_adjust=False,
+            )
+        except Exception as exc:  # pragma: no cover (depends on yfinance/network)
+            last_reason = f"yfinance download failed: {exc}"
+            continue
 
-    dates = [str(d.date()) for d in close_df.index]
-    prices = close_df.to_numpy(dtype=float)  # (T, n_assets)
-    return dates, prices
+        if close_data is None or getattr(close_data, "empty", True):
+            last_reason = "yfinance returned empty data"
+            continue
+
+        # yfinance may return MultiIndex columns depending on `group_by`.
+        # We need a DataFrame of Close prices with columns = tickers.
+        close_df: pd.DataFrame | pd.Series
+        if isinstance(close_data.columns, pd.MultiIndex):
+            lv0 = set(close_data.columns.get_level_values(0))
+            lv1 = set(close_data.columns.get_level_values(1))
+            if "Close" in lv0:
+                close_df = close_data["Close"]
+            elif "Close" in lv1:
+                close_df = close_data.xs("Close", level=1, axis=1)
+            else:
+                close_df = close_data
+        else:
+            # Single ticker case: columns are OHLCV fields.
+            if "Close" in close_data.columns:
+                close_df = close_data["Close"]
+            else:
+                close_df = close_data
+
+        if isinstance(close_df, pd.Series):
+            close_df = close_df.to_frame(name=clean_tickers[0])
+
+        # Forward-fill small missing gaps; then require complete rows for covariance.
+        close_df = close_df.ffill().dropna(how="any")
+
+        # Try to reorder columns to match requested tickers.
+        if list(close_df.columns) != clean_tickers:
+            missing = [t for t in clean_tickers if t not in close_df.columns]
+            if not missing and len(clean_tickers) > 1:
+                close_df = close_df[clean_tickers]
+
+        if close_df.empty:
+            last_reason = f"Close data empty after cleaning (period={p})"
+            continue
+
+        dates = [str(d.date()) for d in close_df.index]
+        prices = close_df.to_numpy(dtype=float)  # (T, n_assets)
+        return dates, prices
+
+    raise HTTPException(
+        status_code=500,
+        detail=f"No price history returned for backtest. Tried periods={tried_periods}. {last_reason or ''}".strip(),
+    )
 
 
 def _kupiec_pof_test(exceptions: np.ndarray, confidence: float) -> KupiecPOFResult:
